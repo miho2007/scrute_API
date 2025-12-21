@@ -1,11 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from databases import Database
-from typing import List
 import os
 
-# Use your Renderer PostgreSQL
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://chat_db_crwr_user:ghR4USGp12sMVl0LcDxErzn3gZ2fnKCE@dpg-d544gqf5r7bs73e736p0-a/chat_db_crwr"
@@ -16,21 +13,16 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all for testing; tighten in production
+    allow_origins=["*"],  # adjust in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class Message(BaseModel):
-    sender_id: int
-    receiver_id: int
-    text: str
-
 @app.on_event("startup")
 async def startup():
     await database.connect()
-    # Create messages table if it doesn't exist
+    # create messages table
     await database.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY,
@@ -39,26 +31,32 @@ async def startup():
             text TEXT NOT NULL
         )
     """)
+    # create swipes table
+    await database.execute("""
+        CREATE TABLE IF NOT EXISTS swipes (
+            id SERIAL PRIMARY KEY,
+            swiper_id INTEGER NOT NULL,
+            swiped_id INTEGER NOT NULL,
+            UNIQUE (swiper_id, swiped_id)
+        )
+    """)
 
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
 
-@app.post("/send")
-async def send_message(msg: Message):
-    query = """
-        INSERT INTO messages (sender_id, receiver_id, text) 
-        VALUES (:sender_id, :receiver_id, :text)
-    """
-    await database.execute(query, values=msg.dict())
-    return {"status": "ok", "message": msg}
+# New endpoint: save swipe
+@app.post("/swipe")
+async def save_swipe(data: dict):
+    swiper_id = data.get("swiper_id")
+    swiped_id = data.get("swiped_id")
+    if not swiper_id or not swiped_id:
+        return {"error": "Missing swiper_id or swiped_id"}
 
-@app.get("/messages/{user_id}")
-async def get_messages(user_id: int):
     query = """
-        SELECT * FROM messages 
-        WHERE sender_id = :user_id OR receiver_id = :user_id
-        ORDER BY id ASC
+        INSERT INTO swipes (swiper_id, swiped_id)
+        VALUES (:swiper_id, :swiped_id)
+        ON CONFLICT (swiper_id, swiped_id) DO NOTHING
     """
-    rows = await database.fetch_all(query, values={"user_id": user_id})
-    return [dict(r) for r in rows]
+    await database.execute(query, values={"swiper_id": swiper_id, "swiped_id": swiped_id})
+    return {"status": "ok", "swiper_id": swiper_id, "swiped_id": swiped_id}
