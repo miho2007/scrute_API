@@ -1,35 +1,64 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from databases import Database
 from typing import List
+import os
+
+# Use your Renderer PostgreSQL
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://chat_db_crwr_user:ghR4USGp12sMVl0LcDxErzn3gZ2fnKCE@dpg-d544gqf5r7bs73e736p0-a/chat_db_crwr"
+)
+database = Database(DATABASE_URL)
 
 app = FastAPI()
 
-# Allow front-end to access API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # for dev only
+    allow_origins=["*"],  # allow all for testing; tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Message model
 class Message(BaseModel):
     sender_id: int
     receiver_id: int
     text: str
 
-# In-memory storage
-messages: List[Message] = []
+@app.on_event("startup")
+async def startup():
+    await database.connect()
+    # Create messages table if it doesn't exist
+    await database.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            sender_id INTEGER NOT NULL,
+            receiver_id INTEGER NOT NULL,
+            text TEXT NOT NULL
+        )
+    """)
+
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
 
 @app.post("/send")
-def send_message(msg: Message):
-    messages.append(msg)
+async def send_message(msg: Message):
+    query = """
+        INSERT INTO messages (sender_id, receiver_id, text) 
+        VALUES (:sender_id, :receiver_id, :text)
+    """
+    await database.execute(query, values=msg.dict())
     return {"status": "ok", "message": msg}
 
 @app.get("/messages/{user_id}")
-def get_messages(user_id: int):
-    # return messages where user is sender or receiver
-    user_msgs = [m for m in messages if m.sender_id == user_id or m.receiver_id == user_id]
-    return user_msgs
+async def get_messages(user_id: int):
+    query = """
+        SELECT * FROM messages 
+        WHERE sender_id = :user_id OR receiver_id = :user_id
+        ORDER BY id ASC
+    """
+    rows = await database.fetch_all(query, values={"user_id": user_id})
+    return [dict(r) for r in rows]
