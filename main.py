@@ -111,4 +111,10 @@ async def get_swiped_users(user_id: int):
         SELECT u.id, u.user, u.stack, u.abt_me, u.additional_links
         FROM swipes s
         JOIN users u ON u.id = s.swiped_id
-        WHERE s.
+        WHERE s.swiper_id = :user_id
+    """
+    try:
+        rows = await database.fetch_all(query, values={"user_id": user_id})
+        return [dict(r) for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
