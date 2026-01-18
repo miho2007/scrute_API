@@ -57,6 +57,6 @@ def update_user(user_id: str, updated_data: dict):
     raise HTTPException(status_code=404, detail="User not found")
 
 # 4. Get all (to see your "MockAPI" data)
-@app.get("/users")
-def get_all_users():
-    return users_db
+@app.get("/")
+def read_root():
+    return {"status": "Server is running! Go to /docs for Swagger"}
