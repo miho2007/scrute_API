@@ -17,7 +17,11 @@ if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./local.db"
 
 # Connect to Postgres (or SQLite)
-engine = create_engine(DATABASE_URL)
+# Change this line in your main.py:
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"sslmode": "require"} if "localhost" not in DATABASE_URL else {}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
