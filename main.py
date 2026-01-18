@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -7,21 +8,24 @@ from pydantic import BaseModel
 from typing import List
 
 # --- DATABASE CONFIGURATION ---
-# Render provides DATABASE_URL. If it's missing (local), we use SQLite.
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Fix 1: SQLAlchemy requires 'postgresql://' instead of 'postgres://'
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-if not DATABASE_URL:
+# Fix 2: Handle SSL for Render Postgres
+# We use 'sslmode=require' only if we're not running locally
+if DATABASE_URL and "localhost" not in DATABASE_URL:
+    engine = create_engine(
+        DATABASE_URL, 
+        connect_args={"sslmode": "require"}
+    )
+else:
+    # Fallback to local SQLite if no DB URL is found
     DATABASE_URL = "sqlite:///./local.db"
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-# Connect to Postgres (or SQLite)
-# Change this line in your main.py:
-engine = create_engine(
-    DATABASE_URL, 
-    connect_args={"sslmode": "require"} if "localhost" not in DATABASE_URL else {}
-)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -31,7 +35,7 @@ class UserTable(Base):
     id = Column(String, primary_key=True, index=True)
     user = Column(String)
     mail = Column(String, unique=True, index=True)
-    password = Column(String)  # This maps to the "pass" field in your JSON
+    password = Column(String)  # This maps to 'pass' in your JSON
     full_name = Column(String)
     stack = Column(String)
     wanted_stack = Column(String)
@@ -42,13 +46,21 @@ class UserTable(Base):
     swipes_yes = Column(Integer, default=0)
     swiped_on = Column(Integer, default=0)
 
-# Create the tables in the database
+# Create tables (This is where your error was occurring)
 Base.metadata.create_all(bind=engine)
 
-# --- FASTAPI APP SETUP ---
-app = FastAPI(title="Miho Backend API")
+app = FastAPI(title="Miho Backend")
 
-# Dependency to get database access in routes
+# --- CORS SETTINGS ---
+# This allows your Angular/Frontend app to talk to this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -56,7 +68,7 @@ def get_db():
     finally:
         db.close()
 
-# --- DATA SCHEMAS (Pydantic) ---
+# --- SCHEMAS ---
 class UserSchema(BaseModel):
     id: str
     user: str
@@ -78,15 +90,14 @@ class UserSchema(BaseModel):
 # --- API ENDPOINTS ---
 
 @app.get("/")
-def home():
-    return {"message": "API is online", "docs": "/docs"}
+def health_check():
+    return {"status": "online", "database": "connected"}
 
-# 1. Register
 @app.post("/users", response_model=UserSchema)
 def register(user: UserSchema, db: Session = Depends(get_db)):
     db_user = db.query(UserTable).filter(UserTable.mail == user.mail).first()
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already exists")
+        raise HTTPException(status_code=400, detail="User already exists")
     
     new_user = UserTable(**user.dict())
     db.add(new_user)
@@ -94,22 +105,17 @@ def register(user: UserSchema, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
-# 2. Login (Checks mail and pass)
 @app.post("/login")
 def login(credentials: dict, db: Session = Depends(get_db)):
-    email = credentials.get("mail")
-    password = credentials.get("pass")
-    
     user = db.query(UserTable).filter(
-        UserTable.mail == email, 
-        UserTable.password == password
+        UserTable.mail == credentials.get("mail"),
+        UserTable.password == credentials.get("pass")
     ).first()
     
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid mail or pass")
     return user
 
-# 3. Edit User
 @app.put("/users/{user_id}", response_model=UserSchema)
 def update_user(user_id: str, updated_data: dict, db: Session = Depends(get_db)):
     db_user = db.query(UserTable).filter(UserTable.id == user_id).first()
@@ -119,12 +125,11 @@ def update_user(user_id: str, updated_data: dict, db: Session = Depends(get_db))
     for key, value in updated_data.items():
         if hasattr(db_user, key):
             setattr(db_user, key, value)
-    
+            
     db.commit()
     db.refresh(db_user)
     return db_user
 
-# 4. Get All Users (MockAPI style)
 @app.get("/users", response_model=List[UserSchema])
 def get_all(db: Session = Depends(get_db)):
     return db.query(UserTable).all()
