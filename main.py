@@ -10,25 +10,24 @@ from typing import List
 # --- DATABASE CONFIGURATION ---
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Fix 1: SQLAlchemy requires 'postgresql://' instead of 'postgres://'
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if DATABASE_URL:
+    # Fix 1: Ensure it starts with postgresql://
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    
+    # Fix 2: Append SSL mode to the string if it's not already there
+    if "sslmode" not in DATABASE_URL and "localhost" not in DATABASE_URL:
+        if "?" in DATABASE_URL:
+            DATABASE_URL += "&sslmode=require"
+        else:
+            DATABASE_URL += "?sslmode=require"
 
-# Fix 2: Force SSL for Render Postgres to prevent "SSL closed unexpectedly"
-# We only apply this if we are NOT on localhost
-if DATABASE_URL and "localhost" not in DATABASE_URL:
-    engine = create_engine(
-        DATABASE_URL, 
-        connect_args={"sslmode": "require"},
-        pool_pre_ping=True  # Helps keep the connection alive
-    )
-else:
-    # Fallback to local SQLite if no DB URL is found (local testing)
-    DATABASE_URL = "sqlite:///./local.db"
-    engine = create_engine(
-        DATABASE_URL, 
-        connect_args={"check_same_thread": False}
-    )
+# Create Engine with specific SSL arguments for Render
+engine = create_engine(
+    DATABASE_URL if DATABASE_URL else "sqlite:///./local.db",
+    connect_args={"sslmode": "require"} if DATABASE_URL and "localhost" not in DATABASE_URL else {},
+    pool_pre_ping=True
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -39,7 +38,7 @@ class UserTable(Base):
     id = Column(String, primary_key=True, index=True)
     user = Column(String)
     mail = Column(String, unique=True, index=True)
-    password = Column(String)  # This is the "pass" field
+    password = Column(String)
     full_name = Column(String)
     stack = Column(String)
     wanted_stack = Column(String)
@@ -50,21 +49,21 @@ class UserTable(Base):
     swipes_yes = Column(Integer, default=0)
     swiped_on = Column(Integer, default=0)
 
-# Create tables in the DB
-Base.metadata.create_all(bind=engine)
+# This line is where the error triggers; we'll wrap it in a try/except for better logging
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"CRITICAL DATABASE ERROR: {e}")
 
-app = FastAPI(title="Miho Backend")
+app = FastAPI(title="Miho Final Backend")
 
-# --- CORS SETTINGS ---
-# Crucial for your Angular frontend to talk to this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# DB Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -72,7 +71,6 @@ def get_db():
     finally:
         db.close()
 
-# --- DATA SCHEMAS ---
 class UserSchema(BaseModel):
     id: str
     user: str
@@ -87,22 +85,18 @@ class UserSchema(BaseModel):
     feed_appearances: int = 0
     swipes_yes: int = 0
     swiped_on: int = 0
-
     class Config:
         from_attributes = True
 
-# --- API ENDPOINTS ---
-
 @app.get("/")
 def health():
-    return {"status": "online", "database": "connected"}
+    return {"status": "online", "db": "connected"}
 
 @app.post("/users", response_model=UserSchema)
 def register(user: UserSchema, db: Session = Depends(get_db)):
     db_user = db.query(UserTable).filter(UserTable.mail == user.mail).first()
     if db_user:
-        raise HTTPException(status_code=400, detail="User already exists")
-    
+        raise HTTPException(status_code=400, detail="User exists")
     new_user = UserTable(**user.dict())
     db.add(new_user)
     db.commit()
@@ -111,26 +105,22 @@ def register(user: UserSchema, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def login(credentials: dict, db: Session = Depends(get_db)):
-    # Look for 'mail' and 'pass' in the JSON body
     user = db.query(UserTable).filter(
         UserTable.mail == credentials.get("mail"),
         UserTable.password == credentials.get("pass")
     ).first()
-    
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid mail or pass")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
 
 @app.put("/users/{user_id}", response_model=UserSchema)
 def update_user(user_id: str, updated_data: dict, db: Session = Depends(get_db)):
     db_user = db.query(UserTable).filter(UserTable.id == user_id).first()
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
+        raise HTTPException(status_code=404, detail="Not found")
     for key, value in updated_data.items():
         if hasattr(db_user, key):
             setattr(db_user, key, value)
-            
     db.commit()
     db.refresh(db_user)
     return db_user
