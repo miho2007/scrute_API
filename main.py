@@ -1,113 +1,62 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from databases import Database
-import os
+from typing import List, Optional
 
-# -----------------------
-# Database
-# -----------------------
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://chat_db_crwr_user:ghR4USGp12sMVl0LcDxErzn3gZ2fnKCE@dpg-d544gqf5r7bs73e736p0-a/chat_db_crwr"
-)
-database = Database(DATABASE_URL)
-
-# -----------------------
-# FastAPI app
-# -----------------------
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # allow all for testing; restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# This acts as your "Database"
+users_db = []
 
-# -----------------------
-# Pydantic models
-# -----------------------
-class Message(BaseModel):
-    sender_id: int
-    receiver_id: int
-    text: str
+# Data model based on your JSON structure
+class User(BaseModel):
+    id: str
+    user: str
+    mail: str
+    password: str  # Renamed from 'pass' because 'pass' is a reserved keyword in Python
+    full_name: str
+    stack: str
+    wanted_stack: str
+    abt_me: str
+    additional_links: str
+    swipe_rate: int = 0
+    feed_appearances: int = 0
+    swipes_yes: int = 0
+    swiped_on: int = 0
 
-class Swipe(BaseModel):
-    swiper_id: int
-    swiped_id: int
+# 1. Register: Create a new user
+@app.post("/users")
+def register_user(user: User):
+    # Check if user ID already exists
+    if any(u["id"] == user.id for u in users_db):
+        raise HTTPException(status_code=400, detail="User ID already exists")
+    
+    users_db.append(user.dict())
+    return {"message": "User registered successfully", "user": user}
 
-# -----------------------
-# Startup / Shutdown
-# -----------------------
-@app.on_event("startup")
-async def startup():
-    await database.connect()
-    # messages table
-    await database.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            sender_id INTEGER NOT NULL,
-            receiver_id INTEGER NOT NULL,
-            text TEXT NOT NULL
-        )
-    """)
-    # swipes table
-    await database.execute("""
-        CREATE TABLE IF NOT EXISTS swipes (
-            id SERIAL PRIMARY KEY,
-            swiper_id INTEGER NOT NULL,
-            swiped_id INTEGER NOT NULL,
-            UNIQUE (swiper_id, swiped_id)
-        )
-    """)
+# 2. Login: Simple check for mail and password
+@app.post("/login")
+def login(credentials: dict):
+    email = credentials.get("mail")
+    password = credentials.get("pass")
+    
+    user = next((u for u in users_db if u["mail"] == email and u["password"] == password), None)
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    return {"message": "Login successful", "user": user}
 
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
+# 3. Edit: Update user info by ID
+@app.put("/users/{user_id}")
+def update_user(user_id: str, updated_data: dict):
+    for user in users_db:
+        if user["id"] == user_id:
+            user.update(updated_data)
+            return {"message": "User updated", "user": user}
+    
+    raise HTTPException(status_code=404, detail="User not found")
 
-# -----------------------
-# Chat endpoints
-# -----------------------
-@app.post("/send")
-async def send_message(msg: Message):
-    query = """
-        INSERT INTO messages (sender_id, receiver_id, text) 
-        VALUES (:sender_id, :receiver_id, :text)
-    """
-    await database.execute(query, values=msg.dict())
-    return {"status": "ok", "message": msg}
-
-@app.get("/messages/{user_id}")
-async def get_messages(user_id: int):
-    query = """
-        SELECT * FROM messages 
-        WHERE sender_id = :user_id OR receiver_id = :user_id
-        ORDER BY id ASC
-    """
-    rows = await database.fetch_all(query, values={"user_id": user_id})
-    return [dict(r) for r in rows]
-
-# -----------------------
-# Swipe endpoints
-# -----------------------
-@app.post("/swipe")
-async def save_swipe(swipe: Swipe):
-    query = """
-        INSERT INTO swipes (swiper_id, swiped_id)
-        VALUES (:swiper_id, :swiped_id)
-        ON CONFLICT (swiper_id, swiped_id) DO NOTHING
-    """
-    try:
-        await database.execute(query, values=swipe.dict())
-        return {"status": "ok", "swiper_id": swipe.swiper_id, "swiped_id": swipe.swiped_id}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/swipes/{user_id}")
-async def get_swiped_users(user_id: int):
-    query = "SELECT swiped_id FROM swipes WHERE swiper_id = :user_id"
-    rows = await database.fetch_all(query, values={"user_id": user_id})
-    return [{"id": r["swiped_id"]} for r in rows]
-
+# 4. Get all (to see your "MockAPI" data)
+@app.get("/users")
+def get_all_users():
+    return users_db
