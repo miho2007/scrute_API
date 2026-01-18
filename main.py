@@ -14,17 +14,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Fix 2: Handle SSL for Render Postgres
-# We use 'sslmode=require' only if we're not running locally
+# Fix 2: Force SSL for Render Postgres to prevent "SSL closed unexpectedly"
+# We only apply this if we are NOT on localhost
 if DATABASE_URL and "localhost" not in DATABASE_URL:
     engine = create_engine(
         DATABASE_URL, 
-        connect_args={"sslmode": "require"}
+        connect_args={"sslmode": "require"},
+        pool_pre_ping=True  # Helps keep the connection alive
     )
 else:
-    # Fallback to local SQLite if no DB URL is found
+    # Fallback to local SQLite if no DB URL is found (local testing)
     DATABASE_URL = "sqlite:///./local.db"
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    engine = create_engine(
+        DATABASE_URL, 
+        connect_args={"check_same_thread": False}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -35,7 +39,7 @@ class UserTable(Base):
     id = Column(String, primary_key=True, index=True)
     user = Column(String)
     mail = Column(String, unique=True, index=True)
-    password = Column(String)  # This maps to 'pass' in your JSON
+    password = Column(String)  # This is the "pass" field
     full_name = Column(String)
     stack = Column(String)
     wanted_stack = Column(String)
@@ -46,13 +50,13 @@ class UserTable(Base):
     swipes_yes = Column(Integer, default=0)
     swiped_on = Column(Integer, default=0)
 
-# Create tables (This is where your error was occurring)
+# Create tables in the DB
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Miho Backend")
 
 # --- CORS SETTINGS ---
-# This allows your Angular/Frontend app to talk to this API
+# Crucial for your Angular frontend to talk to this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -60,7 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Dependency
+# DB Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -68,7 +72,7 @@ def get_db():
     finally:
         db.close()
 
-# --- SCHEMAS ---
+# --- DATA SCHEMAS ---
 class UserSchema(BaseModel):
     id: str
     user: str
@@ -90,7 +94,7 @@ class UserSchema(BaseModel):
 # --- API ENDPOINTS ---
 
 @app.get("/")
-def health_check():
+def health():
     return {"status": "online", "database": "connected"}
 
 @app.post("/users", response_model=UserSchema)
@@ -107,6 +111,7 @@ def register(user: UserSchema, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def login(credentials: dict, db: Session = Depends(get_db)):
+    # Look for 'mail' and 'pass' in the JSON body
     user = db.query(UserTable).filter(
         UserTable.mail == credentials.get("mail"),
         UserTable.password == credentials.get("pass")
