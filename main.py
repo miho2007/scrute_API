@@ -1,8 +1,10 @@
 import os
+import time
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy.exc import OperationalError
 from pydantic import BaseModel
 from typing import List
 
@@ -21,6 +23,7 @@ if DATABASE_URL:
     if "sslmode" not in DATABASE_URL:
         DATABASE_URL += "?sslmode=require"
 
+# Create engine
 engine = create_engine(
     DATABASE_URL if DATABASE_URL else "sqlite:///./local.db",
     pool_pre_ping=True
@@ -50,8 +53,22 @@ class UserTable(Base):
     swipes_yes = Column(Integer, default=0)
     swiped_on = Column(Integer, default=0)
 
-# Create tables (safe on Render)
-Base.metadata.create_all(bind=engine)
+# ======================================================
+# SAFELY CREATE TABLES
+# ======================================================
+
+# Retry connecting if DB is not ready yet
+retries = 5
+for i in range(retries):
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+        break
+    except OperationalError as e:
+        print(f"⚠️ Database connection failed (attempt {i+1}/{retries}): {e}")
+        time.sleep(3)
+else:
+    print("❌ Could not connect to the database after several attempts")
 
 # ======================================================
 # FASTAPI APP
