@@ -2,43 +2,44 @@ import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, String, Integer
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel
 from typing import List
 
-# --- DATABASE CONFIGURATION ---
+# ======================================================
+# DATABASE CONFIG
+# ======================================================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    # Fix 1: Ensure it starts with postgresql://
+    # Render uses postgres:// but SQLAlchemy needs postgresql://
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    
-    # Fix 2: Append SSL mode to the string if it's not already there
-    if "sslmode" not in DATABASE_URL and "localhost" not in DATABASE_URL:
-        if "?" in DATABASE_URL:
-            DATABASE_URL += "&sslmode=require"
-        else:
-            DATABASE_URL += "?sslmode=require"
 
-# Create Engine with specific SSL arguments for Render
+    # Ensure SSL
+    if "sslmode" not in DATABASE_URL:
+        DATABASE_URL += "?sslmode=require"
+
 engine = create_engine(
     DATABASE_URL if DATABASE_URL else "sqlite:///./local.db",
-    connect_args={"sslmode": "require"} if DATABASE_URL and "localhost" not in DATABASE_URL else {},
     pool_pre_ping=True
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
-# --- DATABASE MODEL ---
+# ======================================================
+# DATABASE MODEL
+# ======================================================
+
 class UserTable(Base):
     __tablename__ = "users"
+
     id = Column(String, primary_key=True, index=True)
-    user = Column(String)
-    mail = Column(String, unique=True, index=True)
-    password = Column(String)
+    user = Column(String, nullable=False)
+    mail = Column(String, unique=True, index=True, nullable=False)
+    password = Column(String, nullable=False)
     full_name = Column(String)
     stack = Column(String)
     wanted_stack = Column(String)
@@ -49,13 +50,14 @@ class UserTable(Base):
     swipes_yes = Column(Integer, default=0)
     swiped_on = Column(Integer, default=0)
 
-# This line is where the error triggers; we'll wrap it in a try/except for better logging
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception as e:
-    print(f"CRITICAL DATABASE ERROR: {e}")
+# Create tables (safe on Render)
+Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Miho Final Backend")
+# ======================================================
+# FASTAPI APP
+# ======================================================
+
+app = FastAPI(title="Miho Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +66,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ======================================================
+# DEPENDENCIES
+# ======================================================
+
 def get_db():
     db = SessionLocal()
     try:
@@ -71,7 +77,11 @@ def get_db():
     finally:
         db.close()
 
-class UserSchema(BaseModel):
+# ======================================================
+# SCHEMAS
+# ======================================================
+
+class UserCreate(BaseModel):
     id: str
     user: str
     mail: str
@@ -81,50 +91,65 @@ class UserSchema(BaseModel):
     wanted_stack: str
     abt_me: str
     additional_links: str
-    swipe_rate: int = 0
-    feed_appearances: int = 0
-    swipes_yes: int = 0
-    swiped_on: int = 0
+
+class UserResponse(UserCreate):
+    swipe_rate: int
+    feed_appearances: int
+    swipes_yes: int
+    swiped_on: int
+
     class Config:
         from_attributes = True
 
+class LoginSchema(BaseModel):
+    mail: str
+    password: str
+
+# ======================================================
+# ROUTES
+# ======================================================
+
 @app.get("/")
 def health():
-    return {"status": "online", "db": "connected"}
+    return {"status": "online"}
 
-@app.post("/users", response_model=UserSchema)
-def register(user: UserSchema, db: Session = Depends(get_db)):
-    db_user = db.query(UserTable).filter(UserTable.mail == user.mail).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="User exists")
+@app.post("/users", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    if db.query(UserTable).filter(UserTable.mail == user.mail).first():
+        raise HTTPException(status_code=400, detail="User already exists")
+
     new_user = UserTable(**user.dict())
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     return new_user
 
-@app.post("/login")
-def login(credentials: dict, db: Session = Depends(get_db)):
+@app.post("/login", response_model=UserResponse)
+def login(credentials: LoginSchema, db: Session = Depends(get_db)):
     user = db.query(UserTable).filter(
-        UserTable.mail == credentials.get("mail"),
-        UserTable.password == credentials.get("pass")
+        UserTable.mail == credentials.mail,
+        UserTable.password == credentials.password
     ).first()
+
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
     return user
 
-@app.put("/users/{user_id}", response_model=UserSchema)
-def update_user(user_id: str, updated_data: dict, db: Session = Depends(get_db)):
-    db_user = db.query(UserTable).filter(UserTable.id == user_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="Not found")
-    for key, value in updated_data.items():
-        if hasattr(db_user, key):
-            setattr(db_user, key, value)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
-
-@app.get("/users", response_model=List[UserSchema])
-def get_all(db: Session = Depends(get_db)):
+@app.get("/users", response_model=List[UserResponse])
+def get_users(db: Session = Depends(get_db)):
     return db.query(UserTable).all()
+
+@app.put("/users/{user_id}", response_model=UserResponse)
+def update_user(user_id: str, data: dict, db: Session = Depends(get_db)):
+    user = db.query(UserTable).filter(UserTable.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    for key, value in data.items():
+        if hasattr(user, key):
+            setattr(user, key, value)
+
+    db.commit()
+    db.refresh(user)
+    return user
