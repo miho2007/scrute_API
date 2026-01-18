@@ -1,18 +1,59 @@
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
-from typing import List, Optional
+
+# 1. Database Configuration
+# Render provides the DB URL in an environment variable named 'DATABASE_URL'
+# We use SQLite as a fallback for local development
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
+
+# Fix for SQLAlchemy: Postgres URLs must start with "postgresql://" (Render sometimes gives "postgres://")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# 2. Database Table Model (Same as before)
+class UserTable(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, index=True)
+    user = Column(String)
+    mail = Column(String, unique=True, index=True)
+    password = Column(String)
+    full_name = Column(String)
+    stack = Column(String)
+    wanted_stack = Column(String)
+    abt_me = Column(String)
+    additional_links = Column(String)
+    swipe_rate = Column(Integer, default=0)
+    feed_appearances = Column(Integer, default=0)
+    swipes_yes = Column(Integer, default=0)
+    swiped_on = Column(Integer, default=0)
+
+# Create tables automatically on startup
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# This acts as your "Database"
-users_db = []
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# Data model based on your JSON structure
-class User(BaseModel):
+# Pydantic Schema
+class UserSchema(BaseModel):
     id: str
     user: str
     mail: str
-    password: str  # Renamed from 'pass' because 'pass' is a reserved keyword in Python
+    password: str
     full_name: str
     stack: str
     wanted_stack: str
@@ -23,40 +64,36 @@ class User(BaseModel):
     swipes_yes: int = 0
     swiped_on: int = 0
 
-# 1. Register: Create a new user
+# --- API ENDPOINTS (Stay the same) ---
 @app.post("/users")
-def register_user(user: User):
-    # Check if user ID already exists
-    if any(u["id"] == user.id for u in users_db):
-        raise HTTPException(status_code=400, detail="User ID already exists")
-    
-    users_db.append(user.dict())
-    return {"message": "User registered successfully", "user": user}
+def register_user(user: UserSchema, db: Session = Depends(get_db)):
+    db_user = db.query(UserTable).filter(UserTable.id == user.id).first()
+    if db_user: raise HTTPException(status_code=400, detail="User already exists")
+    new_user = UserTable(**user.dict())
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
 
-# 2. Login: Simple check for mail and password
 @app.post("/login")
-def login(credentials: dict):
-    email = credentials.get("mail")
-    password = credentials.get("pass")
-    
-    user = next((u for u in users_db if u["mail"] == email and u["password"] == password), None)
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    return {"message": "Login successful", "user": user}
+def login(credentials: dict, db: Session = Depends(get_db)):
+    user = db.query(UserTable).filter(
+        UserTable.mail == credentials.get("mail"), 
+        UserTable.password == credentials.get("pass")
+    ).first()
+    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
 
-# 3. Edit: Update user info by ID
 @app.put("/users/{user_id}")
-def update_user(user_id: str, updated_data: dict):
-    for user in users_db:
-        if user["id"] == user_id:
-            user.update(updated_data)
-            return {"message": "User updated", "user": user}
-    
-    raise HTTPException(status_code=404, detail="User not found")
+def update_user(user_id: str, updated_data: dict, db: Session = Depends(get_db)):
+    db_user = db.query(UserTable).filter(UserTable.id == user_id).first()
+    if not db_user: raise HTTPException(status_code=404, detail="User not found")
+    for key, value in updated_data.items():
+        setattr(db_user, key, value)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
-# 4. Get all (to see your "MockAPI" data)
-@app.get("/")
-def read_root():
-    return {"status": "Server is running! Go to /docs for Swagger"}
+@app.get("/users")
+def get_all_users(db: Session = Depends(get_db)):
+    return db.query(UserTable).all()
