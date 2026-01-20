@@ -74,14 +74,15 @@ else:
 # FASTAPI APP
 # ======================================================
 
-app = FastAPI(title="Miho Backend")
+app = FastAPI(title="scrute user Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # For testing; change to specific domains for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"], # Add this to ensure headers are visible
 )
 
 # ======================================================
